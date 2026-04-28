@@ -1,1 +1,381 @@
-# shuxiu-p5
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>蜀绣针法</title>
+
+  <!-- 引入 p5 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: black;
+    }
+  </style>
+</head>
+
+<body>
+
+<script>
+// --- 全局变量与常量 ---
+let lenSlider, weightSlider, groupsSlider, speedSlider, pathSelect, ruleSelect, rotateSlider, colorPicker;
+const SIDEBAR_WIDTH = 220;
+const GRID_SPACING = 30; // 网格间距
+let embroideries = [];
+
+// 拖动、点击与缩放相关变量
+let isDragging = false;
+let translateX = 0, translateY = 0;
+let zoomScale = 1.0; 
+let lastMouseX, lastMouseY;
+let mousePressTime = 0;
+const CLICK_THRESHOLD_MS = 200; 
+const DRAG_THRESHOLD_PX = 5;    
+
+function setup() {
+  let canvas = createCanvas(windowWidth, windowHeight);
+  canvas.position(0, 0);
+  canvas.style('z-index', '-1');
+  setupUI();
+  resetAndCreateDefault();
+}
+
+function setupUI() {
+  let sidebar = createDiv('');
+  sidebar.style('position', 'fixed'); sidebar.style('left', '0'); sidebar.style('top', '0');
+  sidebar.style('width', SIDEBAR_WIDTH + 'px'); sidebar.style('height', '100%');
+  sidebar.style('background-image', 'linear-gradient(rgba(10, 15, 40, 0.95), rgba(20, 30, 70, 0.95))');
+  sidebar.style('backdrop-filter', 'blur(15px)'); sidebar.style('color', '#FFFFFF');
+  sidebar.style('padding', '20px'); sidebar.style('display', 'flex');
+  sidebar.style('flex-direction', 'column'); sidebar.style('font-family', 'sans-serif');
+  sidebar.style('gap', '10px'); sidebar.style('font-size', '12px');
+
+  sidebar.child(createElement('h4', '刺绣工艺高级仿真').style('margin-bottom', '10px'));
+
+  sidebar.child(createSpan('线条组合规则:'));
+  ruleSelect = createSelect();
+  ['1. 滚针', '2. 接针', '3. 点子针', '4. 松针', '5. 车拧针', '6. 二二针', '7. 二三针', '8. 三三针'].forEach((opt, i) => {
+    ruleSelect.option(opt, ['GUN', 'JIE', 'DIAN', 'SONG', 'CHE', 'ERER', 'ERERSAN', 'ERERSAN_3'][i]);
+  });
+  ruleSelect.selected('ERER');
+  ruleSelect.changed(resetAndCreateDefault); 
+  sidebar.child(ruleSelect);
+
+  sidebar.child(createSpan('几何路径:'));
+  pathSelect = createSelect();
+  ['LINE', 'CIRCLE', 'SQUARE', 'WAVE'].forEach(opt => pathSelect.option(opt));
+  pathSelect.changed(resetAndCreateDefault); 
+  sidebar.child(pathSelect);
+
+  sidebar.child(createSpan('针脚长度 (L):'));
+  lenSlider = createSlider(10, 150, 80); sidebar.child(lenSlider);
+
+  sidebar.child(createSpan('针脚粗细 (点径同步):'));
+  weightSlider = createSlider(2, 20, 6); sidebar.child(weightSlider);
+
+  sidebar.child(createSpan('线条数量/组数:'));
+  groupsSlider = createSlider(4, 100, 15); sidebar.child(groupsSlider);
+
+  sidebar.child(createSpan('线条生长速度:'));
+  speedSlider = createSlider(0.002, 0.1, 0.04, 0.001); sidebar.child(speedSlider);
+
+  sidebar.child(createSpan('整体旋转:'));
+  rotateSlider = createSlider(0, TWO_PI, 0, 0.01); sidebar.child(rotateSlider);
+
+  sidebar.child(createSpan('起始颜色:'));
+  colorPicker = createColorPicker(color('#46FFF8'));
+  colorPicker.style('width', '100%'); sidebar.child(colorPicker);
+
+  let hint = createP('提示：滚轮缩放，长按/拖动移画板，短点按加起点');
+  hint.style('font-size', '10px'); hint.style('opacity', '0.7'); hint.style('margin-top','20px');
+  sidebar.child(hint);
+}
+
+function resetAndCreateDefault() {
+  embroideries = [];
+  // 考虑到缩放和偏移，计算逻辑中心点
+  let centerX = ((SIDEBAR_WIDTH + (width - SIDEBAR_WIDTH) / 2) - translateX) / zoomScale;
+  let centerY = (height / 2 - translateY) / zoomScale;
+  embroideries.push(new Embroidery(centerX, centerY, ruleSelect.value(), pathSelect.value()));
+}
+
+class Stitch {
+  constructor(start, end) {
+    this.start = start.copy();
+    this.end = end.copy();
+  }
+}
+
+class Embroidery {
+  constructor(x, y, type, pathType) {
+    this.origin = createVector(x, y);
+    this.type = type;
+    this.pathType = pathType;
+    this.progress = 0;
+    this.currentActiveLine = 0;
+    this.batches = [];
+    this.currentBatchIdx = 0;
+    this.currentStitchIdx = 0;
+    this.maxRows = 15;
+    this.lastGroupsForFill = -1;
+    this.lastLenForFill = -1;
+    this.lastWeightForFill = -1;
+
+    if (['ERER', 'ERERSAN', 'ERERSAN_3'].includes(this.type)) {
+        this.generateFillStitches();
+    }
+  }
+
+  getPointOnPath(d, type) {
+    let x = 0, y = 0;
+    if (type === 'LINE' || type === 'WAVE') {
+      x = d; 
+      if (type === 'LINE') { y = 0; }
+      else if (type === 'WAVE') { y = sin(d * 0.04) * 50; }
+    }
+    else if (type === 'CIRCLE') { 
+      let r = 120; let angle = d / r; 
+      x = cos(angle) * r; y = sin(angle) * r; 
+    }
+    else if (type === 'SQUARE') { 
+      let s = 180; let total = s * 4; let pos = d % (total + 0.001); 
+      let s_half = s / 2; 
+      if (pos < s) { x = pos - s_half; y = -s_half; } 
+      else if (pos < s*2) { x = s_half; y = (pos-s) - s_half; } 
+      else if (pos < s*3) { x = s_half - (pos-s*2); y = s_half; } 
+      else { x = -s_half; y = s_half - (pos-s*3); } 
+    }
+    return createVector(x, y);
+  }
+  
+  getPointOnPathWithOffset(d, type, offsetAmt) {
+    let p = this.getPointOnPath(d, type);
+    let pNext = this.getPointOnPath(d + 0.1, type);
+    let tangent = p5.Vector.sub(pNext, p).normalize();
+    let normal = createVector(-tangent.y, tangent.x);
+    normal.mult(offsetAmt);
+    return p5.Vector.add(p, normal);
+  }
+
+  getFillStitchDir(pt, type) {
+    if (type === 'LINE' || type === 'WAVE') return createVector(0, 1);
+    return createVector(-pt.x, -pt.y).normalize(); 
+  }
+
+  generateFillStitches() {
+    const L = lenSlider.value();
+    const W = weightSlider.value();
+    const G = groupsSlider.value();
+    const pathType = this.pathType;
+    this.batches = [];
+
+    let firstRowLengths = [];
+    let overlapAmount = L * 0.1;
+    let subsequentRowLength = L;
+
+    if (this.type === 'ERER') {
+        for(let i=0; i<G; i++) firstRowLengths.push((i % 2 === 0) ? L : L * 0.5);
+        overlapAmount = L * 0.3;
+    } else if (this.type === 'ERERSAN') {
+        const cycle = [L, (L+L*0.7)/2, L*0.7, (L+(L+L*0.7)/2)/2, ((L+L*0.7)/2+L*0.7)/2];
+        for(let i=0; i<G; i++) firstRowLengths.push(cycle[i % 5]);
+    } else if (this.type === 'ERERSAN_3') {
+        const cycle = [L, (L+L*0.7)/2, L*0.7];
+        for(let i=0; i<G; i++) firstRowLengths.push(cycle[i % 3]);
+    }
+
+    let b0 = [];
+    for (let i = 0; i < firstRowLengths.length; i++) {
+      let pStart = this.getPointOnPath(i * W, pathType);
+      let dir = this.getFillStitchDir(pStart, pathType);
+      b0.push(new Stitch(pStart, p5.Vector.add(pStart, p5.Vector.mult(dir, firstRowLengths[i]))));
+    }
+    this.batches.push(b0);
+
+    for (let r = 1; r < this.maxRows; r++) {
+      let prevBatch = this.batches[r - 1], currBatch = [];
+      for (let i = 0; i < prevBatch.length; i++) {
+        let prevStitch = prevBatch[i], dir = this.getFillStitchDir(prevStitch.start, pathType);
+        let sNew = p5.Vector.sub(prevStitch.end, p5.Vector.mult(dir, overlapAmount));
+        if ((pathType === 'CIRCLE' || pathType === 'SQUARE') && sNew.mag() < L * 0.2) continue; 
+        currBatch.push(new Stitch(sNew, p5.Vector.add(sNew, p5.Vector.mult(dir, subsequentRowLength))));
+      }
+      if (currBatch.length === 0) break;
+      this.batches.push(currBatch);
+    }
+  }
+
+  update() {
+    const G = groupsSlider.value(), L = lenSlider.value(), W = weightSlider.value();
+    if (['ERER', 'ERERSAN', 'ERERSAN_3'].includes(this.type) && (G !== this.lastGroupsForFill || L !== this.lastLenForFill || W !== this.lastWeightForFill)) {
+        this.generateFillStitches();
+        this.lastGroupsForFill = G; this.lastLenForFill = L; this.lastWeightForFill = W;
+        this.currentBatchIdx = min(this.currentBatchIdx, this.batches.length - 1);
+    }
+    let speed = speedSlider.value();
+    if (['ERER', 'ERERSAN', 'ERERSAN_3'].includes(this.type)) {
+      this.progress += speed;
+      if (this.progress >= 1) {
+        this.progress = 0; this.currentStitchIdx++;
+        if (this.currentBatchIdx < this.batches.length && this.currentStitchIdx >= this.batches[this.currentBatchIdx].length) {
+          this.currentStitchIdx = 0; this.currentBatchIdx++;
+          if (this.currentBatchIdx >= this.batches.length) this.currentBatchIdx = 0;
+        }
+      }
+    } else {
+      this.progress += speed;
+      if (this.progress >= 1) { this.progress = 0; this.currentActiveLine++; if (this.currentActiveLine >= G) this.currentActiveLine = 0; }
+    }
+  }
+
+  draw() {
+    push();
+    translate(this.origin.x, this.origin.y);
+    rotate(rotateSlider.value());
+    const W = weightSlider.value(), baseCol = colorPicker.color(), L = lenSlider.value(), num = groupsSlider.value(), pathType = this.pathType;
+
+    if (['ERER', 'ERERSAN', 'ERERSAN_3'].includes(this.type)) {
+        for (let b = 0; b < this.batches.length; b++) {
+            let batch = this.batches[b], pct = b / max(1, this.batches.length - 1);
+            let rowCol = lerpColor(baseCol, color(255), pct * 0.8); rowCol.setAlpha(map(pct, 0, 1, 255, 30));
+            for (let i = 0; i < batch.length; i++) {
+                let s = batch[i], dEnd;
+                if (b < this.currentBatchIdx || (b === this.currentBatchIdx && i < this.currentStitchIdx)) dEnd = s.end;
+                else if (b === this.currentBatchIdx && i === this.currentStitchIdx) dEnd = p5.Vector.lerp(s.start, s.end, this.progress);
+                else continue;
+                this.drawStitchLine(s.start, dEnd, W, rowCol);
+            }
+        }
+    } else {
+      let endColor = color(255, 255, 255, 150);
+      for (let i = 0; i < num; i++) {
+        let colorAmount = map(i, 0, num, 0, 0.85), currentColor = lerpColor(baseCol, endColor, colorAmount);
+        let pStart, pEnd_final;
+        switch (this.type) {
+          case 'GUN': 
+            pStart = this.getPointOnPathWithOffset(i*L*0.5, pathType, i*W*0.8);
+            pEnd_final = this.getPointOnPathWithOffset(i*L*0.5+L, pathType, i*W*0.8); break;
+          case 'JIE':
+            if (i === 0) { pStart = this.getPointOnPath(0, pathType); pEnd_final = this.getPointOnPath(L, pathType); }
+            else { pStart = this.getPointOnPath((i+1)*L, pathType); pEnd_final = this.getPointOnPath(i*L, pathType); } break;
+          case 'DIAN': 
+            pStart = this.getPointOnPath(2*i*L, pathType); pEnd_final = this.getPointOnPath((2*i+1)*L, pathType); break;
+          case 'SONG': 
+            pStart = createVector(0,0); pEnd_final = createVector(cos(TWO_PI/num*i)*L, sin(TWO_PI/num*i)*L); break;
+          case 'CHE': 
+            let ang = map(i,0,num-1,-PI*0.75,PI*0.25); pStart = createVector(cos(ang)*L*2, sin(ang)*L*2);
+            pEnd_final = p5.Vector.add(pStart, createVector(L,0).rotate(ang+map(i,0,num-1,0,PI))); break;
+        }
+        let dEnd = (i < this.currentActiveLine) ? pEnd_final : (i === this.currentActiveLine ? p5.Vector.lerp(pStart, pEnd_final, this.progress) : null);
+        if (dEnd) this.drawStitchLine(pStart, dEnd, W, currentColor);
+      }
+    }
+    pop();
+  }
+
+  drawStitchLine(p1, p2, w, col) {
+    let r = red(col), g = green(col), bl = blue(col), a = alpha(col);
+    stroke(r*0.4, g*0.4, bl*0.4, a); strokeWeight(w + 1.5); line(p1.x, p1.y, p2.x, p2.y);
+    stroke(col); strokeWeight(w); line(p1.x, p1.y, p2.x, p2.y);
+    noStroke(); fill(col); ellipse(p1.x, p1.y, w * 0.8);
+  }
+}
+
+function draw() {
+  drawGradientBg();
+  
+  // 画板变换空间
+  push();
+  translate(translateX, translateY);
+  scale(zoomScale);
+  
+  // 1: 绘制网格点阵 (在缩放空间内绘制，使其随画板移动和缩放)
+  drawGrid();
+  
+  // 2: 绘制刺绣
+  embroideries.forEach(e => { e.update(); e.draw(); });
+  pop();
+  
+  // 3: 绘制UI提示
+  noStroke(); fill(255, 180); textAlign(LEFT, TOP); textSize(11);
+  text("操作提示：滚轮缩放 | 长按拖动 | 短点击增加起点", SIDEBAR_WIDTH + 20, 20);
+}
+
+function drawGrid() {
+  let dotSize = weightSlider.value() * 0.4;
+  fill(255, 90); noStroke();
+  
+  // 根据当前视图计算网格范围，确保铺满屏幕
+  let viewL = -translateX / zoomScale - 500;
+  let viewR = (width - translateX) / zoomScale + 500;
+  let viewT = -translateY / zoomScale - 500;
+  let viewB = (height - translateY) / zoomScale + 500;
+  
+  for (let x = floor(viewL/GRID_SPACING)*GRID_SPACING; x < viewR; x += GRID_SPACING) {
+    for (let y = floor(viewT/GRID_SPACING)*GRID_SPACING; y < viewB; y += GRID_SPACING) {
+      ellipse(x, y, dotSize);
+    }
+  }
+}
+
+function drawGradientBg() {
+  let colTop = color(22, 34, 82);     
+  let colMid = color(72, 99, 212);    
+  let colBot = color(209, 216, 245);  
+  noFill();
+  for (let i = 0; i <= height; i++) {
+    let inter = (i < height / 2) ? map(i, 0, height/2, 0, 1) : map(i, height/2, height, 0, 1);
+    stroke(lerpColor((i < height/2 ? colTop : colMid), (i < height/2 ? colMid : colBot), inter));
+    line(0, i, width, i);
+  }
+}
+
+// --- 交互事件 ---
+function mouseWheel(event) {
+  if (mouseX > SIDEBAR_WIDTH) {
+    let zoomSpeed = 0.0005;
+    zoomScale -= event.delta * zoomSpeed;
+    zoomScale = constrain(zoomScale, 0.1, 5.0); 
+    return false; 
+  }
+}
+
+function mousePressed() {
+  if (mouseX > SIDEBAR_WIDTH) {
+    isDragging = true;
+    mousePressTime = millis();
+    lastMouseX = mouseX; lastMouseY = mouseY;
+  }
+}
+
+function mouseDragged() {
+  if (isDragging && mouseX > SIDEBAR_WIDTH) {
+    if (dist(mouseX, mouseY, lastMouseX, lastMouseY) > DRAG_THRESHOLD_PX) {
+        translateX += mouseX - lastMouseX;
+        translateY += mouseY - lastMouseY;
+        lastMouseX = mouseX; lastMouseY = mouseY;
+    }
+  }
+}
+
+function mouseReleased() {
+  if (mouseX > SIDEBAR_WIDTH && isDragging) {
+    let elapsedTime = millis() - mousePressTime;
+    let movedDistance = dist(mouseX, mouseY, lastMouseX, lastMouseY);
+    if (elapsedTime < CLICK_THRESHOLD_MS && movedDistance < DRAG_THRESHOLD_PX) {
+      let logicX = (mouseX - translateX) / zoomScale;
+      let logicY = (mouseY - translateY) / zoomScale;
+      embroideries.push(new Embroidery(logicX, logicY, ruleSelect.value(), pathSelect.value()));
+    }
+    isDragging = false;
+  }
+}
+
+function windowResized() { resizeCanvas(windowWidth, windowHeight); }
+
+</script>
+
+</body>
+</html>

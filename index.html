@@ -52,9 +52,9 @@ function setupUI() {
   sidebar.style('flex-direction', 'column'); sidebar.style('font-family', 'sans-serif');
   sidebar.style('gap', '10px'); sidebar.style('font-size', '12px');
 
-  sidebar.child(createElement('h4', '刺绣工艺高级仿真').style('margin-bottom', '10px'));
+  sidebar.child(createElement('h4', '蜀绣针法生成').style('margin-bottom', '10px'));
 
-  sidebar.child(createSpan('线条组合规则:'));
+  sidebar.child(createSpan('蜀绣常用针法:'));
   ruleSelect = createSelect();
   ['1. 滚针', '2. 接针', '3. 点子针', '4. 松针', '5. 车拧针', '6. 二二针', '7. 二三针', '8. 三三针'].forEach((opt, i) => {
     ruleSelect.option(opt, ['GUN', 'JIE', 'DIAN', 'SONG', 'CHE', 'ERER', 'ERERSAN', 'ERERSAN_3'][i]);

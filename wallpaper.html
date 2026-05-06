@@ -23,14 +23,6 @@
 <body>
 
 <script>
-/**
- * 蜀绣生成 v6.2 - 镜像融合与复杂几何版
- * * * 修复日志：
- * 1. [视觉革命] 引入“万花筒镜像”铺贴算法。相邻格子自动翻转，彻底消除“拼图割裂感”，形成完美的无限连续纹样。
- * 2. [图案升级] 移除了简单的几何图形。新增：步步锦、万字不到头、复杂龟背纹等高密度图案。
- * 3. [交互保持] 支持鼠标滚轮缩放，支持点击/双击交互。
- */
-
 let cols, rows;
 let cellSize; 
 let baseWallpaperSize; 
@@ -445,7 +437,8 @@ class StitchUnit {
     drawStitchScreen(this.type, this.subStyle, this.s, this.progress, this.palette);
     drawingContext.restore(); pop();
   }
-}</script>
+}
+</script>
 
 </body>
 </html>
